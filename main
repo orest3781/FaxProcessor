@@ -1,0 +1,1134 @@
+import sys
+import os
+import configparser
+import subprocess
+from datetime import datetime
+import shutil
+import csv
+import getpass
+import logging
+import traceback
+import re  # Import the re module for regular expressions
+
+from PyQt5.QtWidgets import (QApplication, QMainWindow, QPushButton, QVBoxLayout, QHBoxLayout, 
+                             QWidget, QFileDialog, QLabel, QMenuBar, QAction, QDialog, 
+                             QFormLayout, QLineEdit, QTextEdit, QScrollArea, QCompleter,
+                             QMessageBox, QSplashScreen)
+from PyQt5.QtCore import Qt, QStringListModel, QTimer, QTime, QRect, QByteArray
+from PyQt5.QtGui import QFont, QCloseEvent, QIcon, QPixmap, QPainter, QColor, QLinearGradient
+
+import fitz  # PyMuPDF
+
+class SettingsDialog(QDialog):
+    def __init__(self, config, parent=None, clear_autofill_callback=None):
+        super().__init__(parent)
+        self.config = config
+        self.clear_autofill_callback = clear_autofill_callback
+        self.setWindowTitle("Settings")
+        self.setGeometry(200, 200, 600, 650)
+
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll_content = QWidget(scroll)
+
+        main_layout = QVBoxLayout(scroll_content)
+        
+        # Load the logo image
+        logo_path = self.config.get('Customization', 'LOGO', fallback='')
+        if logo_path and os.path.exists(logo_path):
+            logo_pixmap = QPixmap(logo_path)
+        else:
+            logo_pixmap = QPixmap(100, 100)  # Placeholder size if no logo is found
+            logo_pixmap.fill(Qt.gray)  # Placeholder color
+
+        # Create a QLabel to display the logo
+        logo_label = QLabel()
+        logo_label.setPixmap(logo_pixmap.scaled(400, 800, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        logo_label.setAlignment(Qt.AlignCenter)
+        main_layout.addWidget(logo_label)
+
+        instructions = QLabel("Settings:\n")
+        instructions.setWordWrap(True)
+        main_layout.addWidget(instructions)
+
+        form_layout = QFormLayout()
+        self.path_inputs = {}
+
+        paths = ['SOURCE', 'CHART/APPEAL', 'INVOICE', 'MANAGER REVIEW', 'PURGE', 'FURTHER PROCESSING', 'ARCHIVE', 'LOG', 'TAGGED_CSV']
+        for path in paths:
+            hbox = QHBoxLayout()
+            self.path_inputs[path] = QLineEdit(self.config.get('Paths', path, fallback=''))
+            hbox.addWidget(self.path_inputs[path])
+            
+            browse_button = QPushButton("Browse")
+            browse_button.clicked.connect(lambda _, p=path: self.browse_path(p))
+            hbox.addWidget(browse_button)
+            
+            form_layout.addRow(f"{path} Path:", hbox)
+
+        main_layout.addLayout(form_layout)
+
+        main_layout.addWidget(QLabel("Application Customization:"))
+        custom_form_layout = QFormLayout()
+        custom_paths = ['SUMATRAPDF', 'FAVICON', 'SPLASH', 'LOGO']
+        for path in custom_paths:
+            hbox = QHBoxLayout()
+            self.path_inputs[path] = QLineEdit(self.config.get('Customization', path, fallback=''))
+            hbox.addWidget(self.path_inputs[path])
+            
+            browse_button = QPushButton("Browse")
+            if path == 'SUMATRAPDF':
+                browse_button.clicked.connect(lambda _, p=path: self.browse_path(p, file_type='exe'))
+            elif path == 'LOGO':
+                browse_button.clicked.connect(lambda _, p=path: self.browse_path(p, file_type='image'))
+            else:
+                browse_button.clicked.connect(lambda _, p=path: self.browse_path(p, file_type='image'))
+            hbox.addWidget(browse_button)
+            
+            custom_form_layout.addRow(f"{path} Path:", hbox)
+        main_layout.addLayout(custom_form_layout)
+
+        save_button = QPushButton("Save")
+        save_button.clicked.connect(self.save_settings)
+        main_layout.addWidget(save_button)
+
+        clear_autofill_button = QPushButton("Clear Autofill")
+        clear_autofill_button.clicked.connect(self.clear_autofill)
+        main_layout.addWidget(clear_autofill_button)
+
+        scroll.setWidget(scroll_content)
+        dialog_layout = QVBoxLayout(self)
+        dialog_layout.addWidget(scroll)
+
+    def browse_path(self, path, file_type='folder'):
+        if file_type == 'exe':
+            file_path, _ = QFileDialog.getOpenFileName(self, f"Select {path}", "", "Executable Files (*.exe)")
+        elif file_type == 'image':
+            file_path, _ = QFileDialog.getOpenFileName(self, f"Select {path}", "", "Image Files (*.png *.jpg *.bmp)")
+        else:
+            file_path = QFileDialog.getExistingDirectory(self, f"Select {path} Directory")
+        if file_path:
+            self.path_inputs[path].setText(file_path)
+
+    def save_settings(self):
+        for path, input_field in self.path_inputs.items():
+            if path in ['FAVICON', 'SPLASH', 'SUMATRAPDF', 'LOGO']:
+                if 'Customization' not in self.config:
+                    self.config['Customization'] = {}
+                self.config['Customization'][path] = input_field.text()
+            else:
+                self.config['Paths'][path] = input_field.text()
+        
+        try:
+            with open('FaxConfig.ini', 'w') as configfile:
+                self.config.write(configfile)
+            print("Settings saved to FaxConfig.ini")
+        except Exception as e:
+            print(f"Error saving settings: {e}")
+        
+        self.accept()
+
+    def clear_autofill(self):
+        if self.clear_autofill_callback:
+            self.clear_autofill_callback()
+
+    @staticmethod
+    def create_default_splash_screen():
+        pixmap = QPixmap(400, 300)
+        pixmap.fill(Qt.transparent)
+
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        gradient = QLinearGradient(0, 0, 400, 300)
+        gradient.setColorAt(0, QColor(53, 92, 125))
+        gradient.setColorAt(1, QColor(108, 91, 123))
+        painter.fillRect(0, 0, 400, 300, gradient)
+
+        font = QFont("Arial", 24, QFont.Bold)
+        painter.setFont(font)
+        painter.setPen(Qt.white)
+        painter.drawText(pixmap.rect(), Qt.AlignCenter, "Fax Processor")
+
+        font.setPointSize(12)
+        painter.setFont(font)
+        painter.drawText(pixmap.rect().adjusted(0, 100, 0, 0), Qt.AlignCenter, "Version 1.0")
+
+        painter.end()
+        return pixmap
+
+class PDFSorterApp(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Fax Processor")
+        self.setWindowFlags(Qt.WindowStaysOnTopHint)  # Always on top
+        self.setFixedWidth(400)  # Set a fixed width for the main window to make it narrower
+
+        self.config = configparser.ConfigParser()
+        self.load_config()
+
+        favicon_path = self.config.get('Customization', 'FAVICON', fallback='')
+        if favicon_path and os.path.exists(favicon_path):
+            self.setWindowIcon(QIcon(favicon_path))
+
+        self.pdf_files = []
+        self.processed_pdfs = []
+        self.current_pdf_index = -1
+        self.current_process = None
+        self.username = getpass.getuser()
+        self.autofill_list = []
+        self.is_processing = False
+        self.current_pdf_path = None
+        self.previous_pdf_path = None  # Track the previous PDF
+        self.last_action = None  # To keep track of the last action for undo
+        
+        # Set up logging
+        logging.basicConfig(filename='pdf_sorter.log', level=logging.DEBUG,
+                            format='%(asctime)s - %(levelname)s - %(message)s')
+
+        self.init_ui()  # Initialize the UI components
+
+        self.load_autofill_data()
+
+        self.update_pdf_count()
+        self.start_update_timer()
+
+        self.restore_geometry()  # Restore the window geometry
+
+    def load_config(self):
+        try:
+            self.config.read('FaxConfig.ini')
+        except Exception as e:
+            print(f"Error reading config file: {e}")
+
+        if 'Paths' not in self.config:
+            self.config['Paths'] = {}
+        if 'Customization' not in self.config:
+            self.config['Customization'] = {}
+        if 'Window' not in self.config:
+            self.config['Window'] = {}
+
+    def init_ui(self):
+        main_widget = QWidget()
+        self.setCentralWidget(main_widget)
+
+        self.layout = QVBoxLayout()
+        
+        self.source_label = QLabel()
+        self.source_label.setAlignment(Qt.AlignCenter)
+        self.source_label.setFixedHeight(30)  # Reduce height to make it narrower
+        self.source_label.setStyleSheet("border: 2px dashed #aaa; padding: 5px; font-size: 16px; font-weight: bold;")
+        self.layout.addWidget(self.source_label)
+
+        self.further_processing_label = QLabel()
+        self.further_processing_label.setAlignment(Qt.AlignCenter)
+        self.further_processing_label.setStyleSheet("""
+            QLabel {
+                font-weight: bold;
+                font-size: 14px;
+                color: #FE9900;
+                padding: 5px;
+                border: 2px solid #FE9900;
+                border-radius: 5px;
+                background-color: #FFFAF0;
+            }
+            QLabel:hover {
+                background-color: #FFE4B5;
+            }
+        """)
+        self.further_processing_label.setVisible(False)  # Initially hidden
+        self.layout.addWidget(self.further_processing_label)
+
+        self.update_time()
+
+        self.pdf_count_label = QLabel()
+        self.pdf_count_label.setAlignment(Qt.AlignCenter)
+        self.pdf_count_label.setStyleSheet("""
+            QLabel {
+                font-weight: bold;
+                font-size: 22px;
+                margin: 10px 0;
+                color: #FFFFFF;
+                padding: 10px;
+                border-radius: 25px;
+                background-color: #3FAD04;
+            }                         
+        """)
+        self.layout.addWidget(self.pdf_count_label)
+
+        process_button_style = """
+            QPushButton {
+            font-size: 14px;
+            font-weight: bold;
+            color: #F0F0F0;
+            background-color: #0371d4; 
+            border: none;
+            border-radius: 5px;
+            padding: 8px;
+            }
+            QPushButton:hover {
+            background-color: #025aaa;
+            }
+            QPushButton:pressed {
+            background-color: #0371d4;
+            }
+            QPushButton:disabled {
+            background-color: #00F0F0;
+            }
+        """
+        
+        button_center_layout = QHBoxLayout()
+        button_center_layout.addStretch()
+        self.process_button = self.create_button("PROCESS FAXES", process_button_style, self.start_processing, size=(140, 40))
+        button_center_layout.addWidget(self.process_button)
+        button_center_layout.addStretch()
+        self.layout.addLayout(button_center_layout)
+
+        self.optional_text = QLineEdit()
+        self.optional_text.setPlaceholderText("ENTER TEXT TO INSERT")
+        self.optional_text.setFixedHeight(30)  # Reduce height to make it narrower
+        self.optional_text.setEnabled(False)
+        self.optional_text.setStyleSheet("""
+            QLineEdit {
+                font-size: 16px;
+                font-weight: bold;
+                border: 2px solid #000;
+                border-radius: 10px;
+                padding: 5px;
+                background-color: #FFF;
+                color: #000;
+            }
+            
+            QLineEdit::placeholder {
+                color: #F0F0F0;
+            }
+            
+            QLineEdit[disabled="true"] {
+                background-color: #F0F0F0;
+                color: #F0F0F0;
+            }
+            
+            QLineEdit:hover {
+                border: 2px solid #000;
+                background-color: #fff;
+            }
+            
+            QLineEdit:focus {
+                border: 2px solid #000;
+                background-color: #fff;
+                color: #000;
+            }
+        """)
+
+        self.optional_text.returnPressed.connect(lambda: self.sort_pdf("CHART/APPEAL"))
+        self.completer_model = QStringListModel()
+        self.completer = QCompleter(self.completer_model, self)
+        self.completer.setCaseSensitivity(Qt.CaseInsensitive)
+        self.optional_text.setCompleter(self.completer)
+        self.optional_text.setVisible(False)
+        self.layout.addWidget(self.optional_text)
+
+        self.button_layout = QHBoxLayout()
+        self.destination_buttons = {}
+
+        button_styles = {
+            "CHART/APPEAL": {
+                "style": """
+                    QPushButton {
+                        font-size: 12px;
+                        font-weight: bold;
+                        color: #F0F0F0;
+                        background-color: #3FAD04;
+                        border: none;
+                        border-radius: 10px;
+                        padding: 8px;
+                    }
+                    QPushButton:hover {
+                        background-color: #328a03;
+                    }
+                    QPushButton:pressed {
+                        background-color: #3FAD04;
+                    }
+                    QPushButton:disabled {
+                        background-color: #F0F0F0;
+                    }
+                """,
+                "size": (85, 45)  # Reduce size to make it narrower
+            },
+            "INVOICE": {
+                "style": """
+                    QPushButton {
+                        font-size: 12px;
+                        font-weight: bold;
+                        color: #F0F0F0;
+                        background-color: #3FAD04;
+                        border: none;
+                        border-radius: 10px;
+                        padding: 8px;
+                    }
+                    QPushButton:hover {
+                        background-color: #328a03;
+                    }
+                    QPushButton:pressed {
+                        background-color: #3FAD04;
+                    }
+                    QPushButton:disabled {
+                        background-color: #F0F0F0;
+                    }
+                """,
+                "size": (85, 45)  # Reduce size to make it narrower
+            },
+            "MANAGER REVIEW": {
+                "style": """
+                    QPushButton {
+                        font-size: 12px;
+                        font-weight: bold;
+                        color: #F0F0F0;
+                        background-color: #fe9900;
+                        border: none;
+                        border-radius: 10px;
+                        padding: 8px;
+                    }
+                    QPushButton:hover {
+                        background-color: #cb7a00;
+                    }
+                    QPushButton:pressed {
+                        background-color: #fe9900;
+                    }
+                    QPushButton:disabled {
+                        background-color: #F0F0F0;
+                    }
+                """,
+                "size": (85, 45)  # Reduce size to make it narrower
+            },
+            "PURGE": {
+                "style": """
+                    QPushButton {
+                        font-size: 12px;
+                        font-weight: bold;
+                        color: #F0F0F0;
+                        background-color: #D20103;
+                        border: none;
+                        border-radius: 10px;
+                        padding: 8px;
+                    }
+                    QPushButton:hover {
+                        background-color: #a80102;
+                    }
+                    QPushButton:pressed {
+                        background-color: #D20103;
+                    }
+                    QPushButton:disabled {
+                        background-color: #F0F0F0;
+                    }
+                """,
+                "size": (85, 45)  # Reduce size to make it narrower
+            }
+        }
+
+        for dest, properties in button_styles.items():
+            button_text = dest
+            if dest == "MANAGER REVIEW":
+                button_text = "MANAGER\nREVIEW"  # Add newline to split text into two lines
+            elif dest == "CHART/APPEAL":
+                button_text = "CHART\nAPPEAL"  # Add newline to split text into two lines
+
+            button = self.create_button(button_text, properties["style"], lambda _, d=dest: self.sort_pdf(d), size=properties["size"])
+            button.setEnabled(False)
+            button.setVisible(False)
+            self.destination_buttons[dest] = button
+            self.button_layout.addWidget(button)
+
+        self.layout.addLayout(self.button_layout)
+
+        self.archive_reopen_further_layout = QHBoxLayout()
+        self.archive_reopen_further_layout.addStretch()
+
+        self.end_archive_button = self.create_button("END AND \nARCHIVE", """
+            QPushButton {
+                font-size: 16px;
+                font-weight: bold;
+                color: #F0F0F0;
+                background-color: #D20103;
+                border-radius: 10px;
+                padding: 8px;
+            }
+            QPushButton:hover {
+                background-color: #a80102;
+            }
+            QPushButton:pressed {
+                background-color: #D20103;
+            }
+            QPushButton:disabled {
+                background-color: #F0F0F0;    
+            }
+        """, self.end_and_archive, size=(140, 50))  # Reduce size to make it narrower
+        self.end_archive_button.setEnabled(False)
+        self.end_archive_button.setVisible(False)
+        self.archive_reopen_further_layout.addWidget(self.end_archive_button)
+
+        self.reopen_button = self.create_button("REOPEN\n PDF", """
+            QPushButton {
+                font-size: 14px;
+                font-weight: bold;
+                color: #F0F0F0;
+                background-color: #0371d4;
+                border-radius: 10px;
+                padding: 8px;
+            }
+            QPushButton:hover {
+                background-color: #025aaa;
+            }
+            QPushButton:pressed {
+                background-color: #0371d4;
+            }
+            QPushButton:disabled {
+                background-color: #F0F0F0;    
+            }
+        """, self.reopen_pdf, size=(90, 50))  # Reduce size to make it narrower
+        self.reopen_button.setEnabled(False)
+        self.reopen_button.setVisible(False)
+        self.archive_reopen_further_layout.addWidget(self.reopen_button)
+
+        self.further_processing_button = self.create_button("FURTHER\n PROCESSING", """
+            QPushButton {
+                font-size: 16px;
+                font-weight: bold;
+                color: #F0F0F0;
+                background-color: #fe9900;
+                border-radius: 10px;
+                padding: 8px;
+            }
+            QPushButton:hover {
+                background-color: #cb7a00;
+            }
+            QPushButton:pressed {
+                background-color: #fe9900;
+            }
+            QPushButton:disabled {
+                background-color: #F0F0F0;    
+            }
+        """, lambda _, d="FURTHER PROCESSING": self.sort_pdf(d), size=(140, 50))  # Reduce size to make it narrower
+        self.further_processing_button.setEnabled(False)
+        self.further_processing_button.setVisible(False)
+        self.archive_reopen_further_layout.addWidget(self.further_processing_button)
+
+        self.archive_reopen_further_layout.addStretch()
+        self.layout.addLayout(self.archive_reopen_further_layout)
+        self.destination_buttons["FURTHER PROCESSING"] = self.further_processing_button
+
+        self.log_area = QTextEdit()
+        self.log_area.setReadOnly(True)
+        self.layout.addWidget(self.log_area)
+
+        main_widget.setLayout(self.layout)
+
+        menubar = QMenuBar()
+        self.setMenuBar(menubar)
+        settings_action = QAction('Settings', self)
+        settings_action.triggered.connect(self.open_settings)
+        menubar.addAction(settings_action)
+        
+        # Add Undo button
+        undo_button_layout = QHBoxLayout()
+        undo_button_layout.addStretch()
+        self.undo_button = self.create_button("UNDO", """
+            QPushButton {
+                font-size: 14px;
+                font-weight: bold;
+                color: #F0F0F0;
+                background-color: #D20103;
+                border-radius: 10px;
+                padding: 8px;
+            }
+            QPushButton:hover {
+                background-color: #a80102;
+            }
+            QPushButton:pressed {
+                background-color: #D20103;
+            }
+            QPushButton:disabled {
+                background-color: #F0F0F0;
+            }
+        """, self.undo_last_action, size=(85, 45))  # Reduce size to make it narrower
+        self.undo_button.setEnabled(False)
+        self.undo_button.setVisible(False)
+        undo_button_layout.addWidget(self.undo_button)
+        undo_button_layout.addStretch()
+        self.layout.addLayout(undo_button_layout)
+
+    def create_button(self, text, style, callback, size=(100, 50)):
+        button = QPushButton(text)
+        button.setStyleSheet(style)
+        button.setFixedSize(*size)
+        button.clicked.connect(callback)
+        return button
+
+    def open_settings(self):
+        dialog = SettingsDialog(self.config, self, self.clear_autofill_list)
+        if dialog.exec_():
+            favicon_path = self.config.get('Customization', 'FAVICON', fallback='')
+            if favicon_path and os.path.exists(favicon_path):
+                self.setWindowIcon(QIcon(favicon_path))
+        self.update_pdf_count()
+
+    def load_autofill_data(self):
+        try:
+            if os.path.exists('autofill_data.txt'):
+                with open('autofill_data.txt', 'r') as file:
+                    self.autofill_list = [line.strip() for line in file.readlines()]
+                self.update_completer()
+                print("Autofill data loaded from autofill_data.txt")
+        except Exception as e:
+            print(f"Error loading autofill data: {e}")
+
+    def update_completer(self):
+        self.completer_model.setStringList(self.autofill_list)
+
+    def save_autofill_data(self):
+        try:
+            with open('autofill_data.txt', 'w') as file:
+                for item in self.autofill_list:
+                    file.write(f"{item}\n")
+            print("Autofill data saved to autofill_data.txt")
+        except Exception as e:
+            print(f"Error saving autofill data: {e}")
+
+    def log(self, message):
+        self.log_area.append(message)
+        logging.info(message)
+
+    def clear_autofill_list(self):
+        self.autofill_list.clear()
+        self.update_completer()
+        self.save_autofill_data()
+        self.log("Autofill list cleared.")
+
+    def update_pdf_count(self):
+        source_path = self.config.get('Paths', 'SOURCE', fallback='')
+        if not source_path or not os.path.exists(source_path):
+            self.pdf_count_label.setText("NO FAXES TO PROCESS")
+            self.pdf_count_label.setStyleSheet("""
+                QLabel {
+                    font-weight: bold;
+                    font-size: 22px;
+                    margin: 10px 0;
+                    color: #F0F0F0;
+                    padding: 10px;
+                    border-radius: 25px;
+                    background: qlineargradient(
+                        x1: 0, y1: 0, x2: 2, y2: 0,
+                        stop: 0 #F0F0F0, stop: 0 #d4031e);
+                }                         
+            """)
+            return
+
+        pdf_files = [f for f in os.listdir(source_path) if f.lower().endswith(('.pdf', '.PDF'))]
+        count = len(pdf_files)
+        
+        if count == 0:
+            self.pdf_count_label.setText("NO FAXES TO PROCESS")
+            self.pdf_count_label.setStyleSheet("""
+                QLabel {
+                    font-weight: bold;
+                    font-size: 22px;
+                    margin: 10px 0;
+                    color: #F0F0F0;
+                    padding: 10px;
+                    border-radius: 25px;
+                    background: qlineargradient(
+                        x1: 0, y1: 0, x2: 2, y2: 0,
+                        stop: 0 #F0F0F0, stop: 0 #d4031e);
+                }                         
+            """)
+        else:
+            self.pdf_count_label.setText(f"{count} {'FAXES READY' if count > 1 else 'FAX READY'}")
+            self.pdf_count_label.setStyleSheet("""
+                QLabel {
+                    font-weight: bold;
+                    font-size: 22px;
+                    margin: 10px 0;
+                    color: #FFFFFF;
+                    padding: 10px;
+                    border-radius: 25px;
+                    background-color: #3FAD04;
+                }                         
+            """)
+        
+        self.update_further_processing_label()
+        
+    def start_update_timer(self):
+        self.update_timer = QTimer(self)
+        self.update_timer.timeout.connect(self.update_pdf_count)
+        self.update_timer.start(1000)  # 1 second interval
+
+    def open_further_processing_folder(self, event):
+        further_processing_path = self.config.get('Paths', 'FURTHER PROCESSING', fallback='')
+        if further_processing_path and os.path.exists(further_processing_path):
+            try:
+                if sys.platform == "win32":
+                    os.startfile(further_processing_path)
+                elif sys.platform == "darwin":  # macOS
+                    subprocess.run(["open", further_processing_path])
+                else:  # linux variants
+                    subprocess.run(["xdg-open", further_processing_path])
+                self.log(f"Opened further processing folder: {further_processing_path}")
+            except Exception as e:
+                self.log(f"Error opening further processing folder: {str(e)}")
+                QMessageBox.warning(self, "Error", f"Could not open the further processing folder:\n{str(e)}")
+        else:
+            self.log("Further processing path not set or does not exist.")
+            QMessageBox.warning(self, "Error", "Further processing path not set or does not exist.")
+
+    def update_further_processing_label(self):
+        further_processing_path = self.config.get('Paths', 'FURTHER PROCESSING', fallback='')
+        if not further_processing_path or not os.path.exists(further_processing_path):
+            self.further_processing_label.setVisible(False)
+            return
+
+        pdf_files = [f for f in os.listdir(further_processing_path) if f.lower().endswith('.pdf')]
+        if pdf_files:
+            count = len(pdf_files)
+            self.further_processing_label.setText(f"⚠️ {count} {'file' if count == 1 else 'files'} ready for further processing ⚠️")
+            self.further_processing_label.setVisible(True)
+            self.further_processing_label.setCursor(Qt.PointingHandCursor)  # Change cursor to hand when hovering
+            self.further_processing_label.mousePressEvent = self.open_further_processing_folder  # Make label clickable
+        else:
+            self.further_processing_label.setVisible(False)
+
+    def start_processing(self):
+        source_path = self.config.get('Paths', 'SOURCE', fallback='')
+        sumatra_path = self.config.get('Customization', 'SUMATRAPDF', fallback='')
+
+        if not source_path or not sumatra_path:
+            self.log("Source path or SumatraPDF path not set. Please check settings.")
+            return
+        if not os.path.exists(sumatra_path):
+            self.log(f"SumatraPDF not found at: {sumatra_path}")
+            return
+
+        self.log(f"Processing PDFs from: {source_path}")
+        self.pdf_files = sorted(
+            [f for f in os.listdir(source_path) if f.lower().endswith(('.pdf', '.PDF'))],
+            key=lambda x: os.path.getsize(os.path.join(source_path, x)),
+            reverse=True
+        )
+
+        if not self.pdf_files:
+            self.log("No PDF files found in the source folder.")
+            return
+
+        self.current_pdf_index = -1
+        self.processed_pdfs = []
+        self.process_button.setEnabled(False)
+        self.process_button.setVisible(False)  # Hide the button
+        self.end_archive_button.setEnabled(True)
+        self.end_archive_button.setVisible(True)
+        self.undo_button.setEnabled(False)
+        self.undo_button.setVisible(False)
+        for button in self.destination_buttons.values():
+            button.setEnabled(True)
+            button.setVisible(True)
+        self.optional_text.setVisible(True)
+        self.optional_text.setEnabled(True)
+        self.is_processing = True
+
+        self.update_further_processing_label()
+        self.open_next_pdf()
+
+    def open_next_pdf(self):
+        self.previous_pdf_path = self.current_pdf_path  # Store the current PDF path as the previous one
+
+        self.current_pdf_index += 1
+
+        if self.current_pdf_index >= len(self.pdf_files):
+            self.log("All PDFs processed.")
+            self.end_and_archive()
+            return
+        
+        remaining = len(self.pdf_files) - self.current_pdf_index
+        self.pdf_count_label.setText(f"{remaining} {'FAXES READY' if remaining > 1 else 'FAX READY'}")
+
+        source_path = self.config.get('Paths', 'SOURCE', fallback='')
+        sumatra_path = self.config.get('Customization', 'SUMATRAPDF', fallback='')
+        self.current_pdf_path = os.path.join(source_path, self.pdf_files[self.current_pdf_index])
+
+        self.log(f"Opening PDF: {self.pdf_files[self.current_pdf_index]}")
+        
+        try:
+            if self.current_process:
+                self.current_process.terminate()
+                self.current_process.wait()
+                self.current_process = None
+
+            self.current_process = subprocess.Popen([sumatra_path, self.current_pdf_path])
+            
+            self.optional_text.setFocus()
+            self.reopen_button.setEnabled(True)
+            self.reopen_button.setVisible(True)
+        except Exception as e:
+            self.log(f"Error opening PDF: {str(e)}")
+            self.open_next_pdf()
+        
+    def reopen_pdf(self):
+        if self.current_pdf_path:
+            sumatra_path = self.config.get('Customization', 'SUMATRAPDF', fallback='')
+            if not os.path.exists(sumatra_path):
+                self.log(f"SumatraPDF not found at: {sumatra_path}")
+                return
+
+            self.log(f"Reopening PDF: {self.current_pdf_path}")
+            try:
+                if self.current_process:
+                    self.current_process.terminate()
+                    self.current_process.wait()
+                self.current_process = subprocess.Popen([sumatra_path, self.current_pdf_path])
+            except Exception as e:
+                self.log(f"Error reopening PDF: {str(e)}")
+
+    def get_pdf_page_count(self, pdf_path):
+        try:
+            with fitz.open(pdf_path) as doc:
+                return len(doc)
+        except Exception as e:
+            self.log(f"Error getting PDF page count: {str(e)}")
+            return 0
+
+    def sort_pdf(self, destination):
+        if self.current_pdf_index < 0 or self.current_pdf_index >= len(self.pdf_files):
+            self.log("No PDF currently open for sorting.")
+            return
+
+        source_path = self.config.get('Paths', 'SOURCE', fallback='')
+        dest_path = self.config.get('Paths', destination, fallback='')
+        if not dest_path:
+            self.log(f"No path set for {destination}. Please check settings.")
+            return
+        
+        if not os.path.exists(dest_path):
+            os.makedirs(dest_path)
+
+        current_pdf = self.pdf_files[self.current_pdf_index]
+        file_name, file_extension = os.path.splitext(current_pdf)
+        
+        optional_text = self.optional_text.text().upper()
+        optional_text = re.sub(r'[^A-Z0-9-]', '', optional_text)  # Sanitize the entered text
+        if optional_text and optional_text not in self.autofill_list:
+            self.autofill_list.append(optional_text)
+            self.update_completer()
+            self.save_autofill_data()
+
+        parts = file_name.split('--')
+        if len(parts) == 2 and optional_text:
+            new_file_name = f"{parts[0]}-{optional_text}-{parts[1]}"
+        else:
+            new_file_name = file_name
+
+        if destination == "INVOICE":
+            new_file_name = f"{new_file_name}_INVOICE"
+        elif destination == "MANAGER REVIEW":
+            new_file_name = f"{new_file_name}_MANAGER-REVIEW"
+        elif destination == "PURGE":
+            new_file_name = f"{new_file_name}_PURGE"
+        elif destination == "FURTHER PROCESSING":
+            new_file_name = f"{new_file_name}_FURTHER-PROCESSING"
+
+        new_file_name += file_extension
+
+        source_file = os.path.join(source_path, current_pdf)
+        dest_file = os.path.join(dest_path, new_file_name)
+
+        counter = 1
+        base_name = os.path.splitext(new_file_name)[0]
+        while os.path.exists(dest_file):
+            new_file_name = f"{base_name} ({counter}){file_extension}"
+            dest_file = os.path.join(dest_path, new_file_name)
+            counter += 1
+
+        try:
+            shutil.move(source_file, dest_file)
+            self.log(f"Moved and renamed {current_pdf} to {new_file_name} in {destination}")
+            self.processed_pdfs.append(dest_file)
+            
+            self.log_to_csv(source_file, dest_file, destination)
+            
+            # Update last action
+            self.last_action = (dest_file, source_file, destination, new_file_name)
+            self.undo_button.setEnabled(True)
+            self.undo_button.setVisible(True)
+        except Exception as e:
+            self.log(f"Error moving file: {str(e)}")
+
+        if self.current_process:
+            self.current_process.terminate()
+            self.current_process.wait()
+
+        self.optional_text.clear()
+        QTimer.singleShot(0, self.open_next_pdf)
+    
+    def undo_last_action(self):
+        if self.last_action:
+            dest_file, source_file, destination, new_file_name = self.last_action
+            try:
+                shutil.move(dest_file, source_file)
+                self.log(f"Undid move: {dest_file} back to {source_file}")
+                self.remove_csv_entry(dest_file, new_file_name)
+
+                # Reopen the previous PDF
+                if self.current_process:
+                    self.current_process.terminate()
+                    self.current_process.wait()
+                
+                self.current_pdf_path = self.previous_pdf_path  # Set current PDF to previous
+                self.previous_pdf_path = None
+                if self.current_pdf_path:
+                    sumatra_path = self.config.get('Customization', 'SUMATRAPDF', fallback='')
+                    self.current_process = subprocess.Popen([sumatra_path, self.current_pdf_path])
+                    self.log(f"Reopened previous PDF: {self.current_pdf_path}")
+                
+                self.last_action = None
+                self.undo_button.setEnabled(False)
+                self.undo_button.setVisible(False)
+            except Exception as e:
+                self.log(f"Error undoing last action: {str(e)}")
+
+    def format_size(self, size):
+        for unit in ['B', 'KB', 'MB', 'GB']:
+            if size < 1024:
+                return f"{size:.2f} {unit}"
+            size /= 1024
+
+    def log_to_csv(self, source_file, dest_file, destination):
+        log_path = self.config.get('Paths', 'LOG', fallback='')
+        tagged_log_path = self.config.get('Paths', 'TAGGED_CSV', fallback='')
+
+        if not log_path:
+            self.log("Log path not set. Please check settings.")
+            return
+
+        if destination in ["INVOICE", "MANAGER REVIEW", "PURGE", "FURTHER PROCESSING"]:
+            if not tagged_log_path:
+                self.log("Tagged CSV path not set. Please check settings.")
+                return
+            is_tagged = True
+        else:
+            is_tagged = False
+
+        today = datetime.now().strftime("%Y%m%d")
+        if is_tagged:
+            csv_file = os.path.join(tagged_log_path, f"{today}-TAGGED-FAX-LOG.csv")
+        else:
+            csv_file = os.path.join(log_path, f"{today}-FAX-LOG.csv")
+        file_exists = os.path.isfile(csv_file)
+
+        try:
+            with open(csv_file, 'a', newline='') as file:
+                writer = csv.writer(file)
+                if not file_exists:
+                    writer.writerow(['DATE_TIME', 'USERNAME', 'PDF_PAGE_COUNT', 'SOURCE_PATH', 'DESTINATION_PATH', 'PDF_FILE_SIZE', 'ORIGINAL-FILENAME', 'NEW-FILENAME'])
+
+                date_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                page_count = self.get_pdf_page_count(dest_file)
+                file_size = os.path.getsize(dest_file)
+                formatted_size = self.format_size(file_size)
+                source_path = os.path.dirname(source_file)
+                destination_path = os.path.dirname(dest_file)
+                original_filename = os.path.basename(source_file)
+                new_filename = os.path.basename(dest_file)
+
+                writer.writerow([date_time, self.username, page_count, source_path, destination_path, formatted_size, original_filename, new_filename])
+            
+            self.log(f"Logged sorting information to CSV: {csv_file}")
+        except Exception as e:
+            self.log(f"Error logging to CSV: {str(e)}")
+
+    def remove_csv_entry(self, dest_file, new_file_name):
+        log_path = self.config.get('Paths', 'LOG', fallback='')
+        tagged_log_path = self.config.get('Paths', 'TAGGED_CSV', fallback='')
+
+        if not log_path:
+            self.log("Log path not set. Please check settings.")
+            return
+
+        destination = None
+        if "INVOICE" in new_file_name:
+            destination = "INVOICE"
+        elif "MANAGER-REVIEW" in new_file_name:
+            destination = "MANAGER REVIEW"
+        elif "PURGE" in new_file_name:
+            destination = "PURGE"
+        elif "FURTHER-PROCESSING" in new_file_name:
+            destination = "FURTHER PROCESSING"
+
+        if destination:
+            if not tagged_log_path:
+                self.log("Tagged CSV path not set. Please check settings.")
+                return
+            csv_file = os.path.join(tagged_log_path, f"{datetime.now().strftime('%Y%m%d')}-TAGGED-FAX-LOG.csv")
+        else:
+            csv_file = os.path.join(log_path, f"{datetime.now().strftime('%Y%m%d')}-FAX-LOG.csv")
+
+        temp_csv_file = csv_file + ".tmp"
+
+        try:
+            with open(csv_file, 'r', newline='') as infile, open(temp_csv_file, 'w', newline='') as outfile:
+                reader = csv.reader(infile)
+                writer = csv.writer(outfile)
+                
+                for row in reader:
+                    if row[7] != os.path.basename(dest_file):  # Skip the row matching the dest_file name
+                        writer.writerow(row)
+
+            shutil.move(temp_csv_file, csv_file)
+            self.log(f"Removed entry for {dest_file} from CSV log: {csv_file}")
+        except Exception as e:
+            self.log(f"Error removing entry from CSV: {str(e)}")
+
+    def end_and_archive(self):
+        if self.current_process:
+            self.current_process.terminate()
+            self.current_process.wait()
+        
+        self.archive_processed_pdfs()
+        self.log("Processing ended. Processed PDFs have been archived.")
+        
+        self.reset_to_initial_state()
+
+    def reset_to_initial_state(self):
+        self.process_button.setEnabled(True)
+        self.process_button.setVisible(True)  # Show the button
+        self.end_archive_button.setEnabled(False)
+        self.end_archive_button.setVisible(False)
+        self.reopen_button.setEnabled(False)
+        self.reopen_button.setVisible(False)
+        self.further_processing_button.setEnabled(False)
+        self.further_processing_button.setVisible(False)
+        self.undo_button.setEnabled(False)
+        self.undo_button.setVisible(False)
+        for button in self.destination_buttons.values():
+            button.setEnabled(False)
+            button.setVisible(False)
+        self.optional_text.setEnabled(False)
+        self.optional_text.setVisible(False)
+        self.optional_text.clear()
+
+        self.current_pdf_index = -1
+        self.current_pdf_path = None
+        self.previous_pdf_path = None
+        self.processed_pdfs = []
+        self.is_processing = False
+
+        self.update_time()
+        self.log("Application reset to initial state. Ready for new processing cycle.")
+        self.update_pdf_count()
+        
+    def archive_processed_pdfs(self):
+        archive_base_path = self.config.get('Paths', 'ARCHIVE', fallback='')
+        if not archive_base_path:
+            self.log("Archive path not set. Please check settings.")
+            return
+
+        today = datetime.now().strftime("%Y%m%d")
+        archive_folder = os.path.join(archive_base_path, f"{today}-FAX-ARCHIVE")
+        
+        try:
+            os.makedirs(archive_folder, exist_ok=True)
+            self.log(f"Created archive folder: {archive_folder}")
+
+            for pdf_path in self.processed_pdfs:
+                pdf_name = os.path.basename(pdf_path)
+                archive_path = os.path.join(archive_folder, pdf_name)
+
+                if os.path.exists(pdf_path):
+                    shutil.copy2(pdf_path, archive_path)
+                    self.log(f"Archived: {pdf_name}")
+                else:
+                    self.log(f"File not found, skipping: {pdf_path}")
+
+            self.log("Archiving complete.")
+        except Exception as e:
+            self.log(f"Error during archiving: {str(e)}")
+
+    def closeEvent(self, event: QCloseEvent):
+        if self.is_processing:
+            reply = QMessageBox.question(self, 'Confirm Exit',
+                                         "Processing is in progress. Are you sure you want to quit?\n"
+                                         "Closing will END AND ARCHIVE current progress.",
+                                         QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+
+            if reply == QMessageBox.Yes:
+                self.end_and_archive()
+                self.save_autofill_data()
+                event.accept()
+            else:
+                event.ignore()
+        else:
+            self.save_geometry()
+            self.save_autofill_data()
+            event.accept()
+
+    def save_geometry(self):
+        geometry = self.saveGeometry()
+        self.config['Window']['geometry'] = geometry.toHex().data().decode()
+        try:
+            with open('FaxConfig.ini', 'w') as configfile:
+                self.config.write(configfile)
+            print("Window geometry saved to FaxConfig.ini")
+        except Exception as e:
+            print(f"Error saving window geometry: {e}")
+
+    def restore_geometry(self):
+        geometry = self.config.get('Window', 'geometry', fallback=None)
+        if geometry:
+            self.restoreGeometry(QByteArray.fromHex(geometry.encode()))
+
+    def update_time(self):
+        current_time = QTime.currentTime().toString("hh:mm:ss AP")
+        date_text = datetime.now().strftime("%Y-%m-%d")
+        self.source_label.setText(f"{date_text} | {current_time}")
+        QTimer.singleShot(1000, self.update_time)
+
+def exception_hook(exctype, value, tb):
+    print(f"An unhandled exception occurred: {exctype.__name__}: {value}")
+    print("Traceback:")
+    traceback.print_tb(tb)
+    
+    logging.error(f"Unhandled exception: {exctype.__name__}: {value}")
+    logging.error("Traceback:")
+    logging.error(''.join(traceback.format_tb(tb)))
+    
+    error_msg = f"An unexpected error occurred:\n{exctype.__name__}: {value}\n\nPlease check the log file for more details."
+    QMessageBox.critical(None, "Unhandled Exception", error_msg)
+
+def main():
+    app = QApplication(sys.argv)
+    
+    sys.excepthook = exception_hook
+
+    config = configparser.ConfigParser()
+    config.read('FaxConfig.ini')
+    splash_path = config.get('Customization', 'SPLASH', fallback='')
+    if splash_path and os.path.exists(splash_path):
+        splash_pix = QPixmap(splash_path)
+    else:
+        splash_pix = SettingsDialog.create_default_splash_screen()
+
+    splash = QSplashScreen(splash_pix, Qt.WindowStaysOnTopHint)
+    splash.show()
+    app.processEvents()
+
+    window = PDFSorterApp()
+    
+    QTimer.singleShot(1000, splash.close)
+
+    window.show()
+    
+    try:
+        sys.exit(app.exec_())
+    except Exception as e:
+        print(f"Exception in main loop: {e}")
+        logging.error(f"Exception in main loop: {e}")
+        logging.error(traceback.format_exc())
+
+if __name__ == "__main__":
+    main()
