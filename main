@@ -183,7 +183,7 @@ class PDFSorterApp(QMainWindow):
         self.last_action = None  # To keep track of the last action for undo
         
         # Set up logging
-        logging.basicConfig(filename='pdf_sorter.log', level=logging.DEBUG,
+        logging.basicConfig(filename='FaxProcessor.log', level=logging.DEBUG,
                             format='%(asctime)s - %(levelname)s - %(message)s')
 
         self.init_ui()  # Initialize the UI components
@@ -207,6 +207,12 @@ class PDFSorterApp(QMainWindow):
             self.config['Customization'] = {}
         if 'Window' not in self.config:
             self.config['Window'] = {}
+
+        # Normalize paths
+        for key in self.config['Paths']:
+            self.config['Paths'][key] = os.path.normpath(self.config['Paths'][key])
+        for key in self.config['Customization']:
+            self.config['Customization'][key] = os.path.normpath(self.config['Customization'][key])
 
     def init_ui(self):
         main_widget = QWidget()
@@ -294,7 +300,7 @@ class PDFSorterApp(QMainWindow):
                 font-weight: bold;
                 border: 2px solid #000;
                 border-radius: 10px;
-                padding: 5px;
+                padding: 1px;
                 background-color: #FFF;
                 color: #000;
             }
@@ -606,6 +612,8 @@ class PDFSorterApp(QMainWindow):
 
     def update_pdf_count(self):
         source_path = self.config.get('Paths', 'SOURCE', fallback='')
+        source_path = os.path.normpath(source_path)  # Normalize source path
+        
         if not source_path or not os.path.exists(source_path):
             self.pdf_count_label.setText("NO FAXES TO PROCESS")
             self.pdf_count_label.setStyleSheet("""
@@ -664,6 +672,8 @@ class PDFSorterApp(QMainWindow):
 
     def open_further_processing_folder(self, event):
         further_processing_path = self.config.get('Paths', 'FURTHER PROCESSING', fallback='')
+        further_processing_path = os.path.normpath(further_processing_path)  # Normalize path
+        
         if further_processing_path and os.path.exists(further_processing_path):
             try:
                 if sys.platform == "win32":
@@ -682,6 +692,8 @@ class PDFSorterApp(QMainWindow):
 
     def update_further_processing_label(self):
         further_processing_path = self.config.get('Paths', 'FURTHER PROCESSING', fallback='')
+        further_processing_path = os.path.normpath(further_processing_path)  # Normalize path
+        
         if not further_processing_path or not os.path.exists(further_processing_path):
             self.further_processing_label.setVisible(False)
             return
@@ -698,7 +710,9 @@ class PDFSorterApp(QMainWindow):
 
     def start_processing(self):
         source_path = self.config.get('Paths', 'SOURCE', fallback='')
+        source_path = os.path.normpath(source_path)  # Normalize source path
         sumatra_path = self.config.get('Customization', 'SUMATRAPDF', fallback='')
+        sumatra_path = os.path.normpath(sumatra_path)  # Normalize SumatraPDF path
 
         if not source_path or not sumatra_path:
             self.log("Source path or SumatraPDF path not set. Please check settings.")
@@ -750,7 +764,9 @@ class PDFSorterApp(QMainWindow):
         self.pdf_count_label.setText(f"{remaining} {'FAXES READY' if remaining > 1 else 'FAX READY'}")
 
         source_path = self.config.get('Paths', 'SOURCE', fallback='')
+        source_path = os.path.normpath(source_path)  # Normalize source path
         sumatra_path = self.config.get('Customization', 'SUMATRAPDF', fallback='')
+        sumatra_path = os.path.normpath(sumatra_path)  # Normalize SumatraPDF path
         self.current_pdf_path = os.path.join(source_path, self.pdf_files[self.current_pdf_index])
 
         self.log(f"Opening PDF: {self.pdf_files[self.current_pdf_index]}")
@@ -773,6 +789,7 @@ class PDFSorterApp(QMainWindow):
     def reopen_pdf(self):
         if self.current_pdf_path:
             sumatra_path = self.config.get('Customization', 'SUMATRAPDF', fallback='')
+            sumatra_path = os.path.normpath(sumatra_path)  # Normalize SumatraPDF path
             if not os.path.exists(sumatra_path):
                 self.log(f"SumatraPDF not found at: {sumatra_path}")
                 return
@@ -800,7 +817,10 @@ class PDFSorterApp(QMainWindow):
             return
 
         source_path = self.config.get('Paths', 'SOURCE', fallback='')
+        source_path = os.path.normpath(source_path)  # Normalize source path
         dest_path = self.config.get('Paths', destination, fallback='')
+        dest_path = os.path.normpath(dest_path)  # Normalize destination path
+        
         if not dest_path:
             self.log(f"No path set for {destination}. Please check settings.")
             return
@@ -883,6 +903,7 @@ class PDFSorterApp(QMainWindow):
                 self.previous_pdf_path = None
                 if self.current_pdf_path:
                     sumatra_path = self.config.get('Customization', 'SUMATRAPDF', fallback='')
+                    sumatra_path = os.path.normpath(sumatra_path)  # Normalize SumatraPDF path
                     self.current_process = subprocess.Popen([sumatra_path, self.current_pdf_path])
                     self.log(f"Reopened previous PDF: {self.current_pdf_path}")
                 
@@ -900,7 +921,9 @@ class PDFSorterApp(QMainWindow):
 
     def log_to_csv(self, source_file, dest_file, destination):
         log_path = self.config.get('Paths', 'LOG', fallback='')
+        log_path = os.path.normpath(log_path)  # Normalize log path
         tagged_log_path = self.config.get('Paths', 'TAGGED_CSV', fallback='')
+        tagged_log_path = os.path.normpath(tagged_log_path)  # Normalize tagged CSV path
 
         if not log_path:
             self.log("Log path not set. Please check settings.")
@@ -944,7 +967,9 @@ class PDFSorterApp(QMainWindow):
 
     def remove_csv_entry(self, dest_file, new_file_name):
         log_path = self.config.get('Paths', 'LOG', fallback='')
+        log_path = os.path.normpath(log_path)  # Normalize log path
         tagged_log_path = self.config.get('Paths', 'TAGGED_CSV', fallback='')
+        tagged_log_path = os.path.normpath(tagged_log_path)  # Normalize tagged CSV path
 
         if not log_path:
             self.log("Log path not set. Please check settings.")
@@ -1024,6 +1049,8 @@ class PDFSorterApp(QMainWindow):
         
     def archive_processed_pdfs(self):
         archive_base_path = self.config.get('Paths', 'ARCHIVE', fallback='')
+        archive_base_path = os.path.normpath(archive_base_path)  # Normalize archive path
+
         if not archive_base_path:
             self.log("Archive path not set. Please check settings.")
             return
